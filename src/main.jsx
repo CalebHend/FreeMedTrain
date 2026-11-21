@@ -32,6 +32,7 @@ function App() {
   const [user, setUser] = useState(null);
   const [checking, setChecking] = useState(true);
   const [mode, setMode] = useState("signup");
+  const [showPractice, setShowPractice] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -163,7 +164,20 @@ function App() {
               <h2>Welcome to FreeMedTrain!</h2>
               <p>Signed in as:</p>
               <p style={{ color: "#82d9c0" }}>{user.email}</p>
-              <p>Your student dashboard is coming next.</p>
+              
+<p>Welcome to your student dashboard.</p>
+<p>Choose a study activity to begin.</p>
+
+<button
+  type="button"
+  style={{ ...buttonStyle, marginBottom: "15px" }}
+  onClick={() => setShowPractice(!showPractice)}
+>
+  {showPractice
+    ? "Hide Practice Questions"
+    : "Start Practice Questions"}
+</button>
+
 
               <button style={buttonStyle} onClick={handleSignOut}>
                 Sign Out
@@ -274,7 +288,7 @@ function App() {
         </section>
 
         
-{user && <PracticeQuestion />}
+{user && showPractice && <PracticeQuestion />}
 
 {!checking && !user && (
   <p style={{ color: "#b5cbd5", marginTop: "24px" }}>
