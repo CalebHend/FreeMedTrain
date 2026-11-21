@@ -273,7 +273,15 @@ function App() {
           )}
         </section>
 
-        <PracticeQuestion />
+        
+{user && <PracticeQuestion />}
+
+{!checking && !user && (
+  <p style={{ color: "#b5cbd5", marginTop: "24px" }}>
+    Sign in to access FreeMedTrain practice questions.
+  </p>
+)}
+
 
         <p style={{
           color: "#a3b8c4",
