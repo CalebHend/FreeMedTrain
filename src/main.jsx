@@ -1,316 +1,122 @@
-
-import React, { useEffect, useState } from "react";
-import { createRoot } from "react-dom/client";
-import { supabase } from "./lib/supabase";
-import PracticeQuestion from "./PracticeQuestion";
-
-const inputStyle = {
-  width: "100%",
-  padding: "13px",
-  marginTop: "7px",
-  borderRadius: "8px",
-  border: "1px solid #6e8996",
-  background: "#102c3b",
-  color: "white",
-  boxSizing: "border-box",
-  fontSize: "16px"
-};
-
-const buttonStyle = {
-  width: "100%",
-  padding: "13px",
-  background: "#82d9c0",
-  color: "#102c3b",
-  border: "none",
-  borderRadius: "8px",
-  fontWeight: "bold",
-  fontSize: "16px",
-  cursor: "pointer"
-};
-
-function App() {
-  const [user, setUser] = useState(null);
-  const [checking, setChecking] = useState(true);
-  const [mode, setMode] = useState("signup");
-  const [showPractice, setShowPractice] = useState(false);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
-
-  useEffect(() => {
-    let active = true;
-
-    supabase.auth.getSession().then(({ data, error }) => {
-      if (!active) return;
-      setUser(data.session?.user ?? null);
-      if (error) setError(error.message);
-      setChecking(false);
-    }).catch((err) => {
-      if (active) {
-        setError(err.message);
-        setChecking(false);
-      }
+        <div className="grid2">
+          <input className="search" aria-label="Search questions" placeholder="Search questions, topics, or subjects" value={librarySearch} onChange={(e) => { setLibrarySearch(e.target.value); setLibraryLimit(30); }} />
+          <select className="search" aria-label="Subject" value={librarySubject} onChange={(e) => { setLibrarySubject(e.target.value); setLibraryLimit(30); }}><option>All subjects</option>{subjects.map((s) => <option key={s}>{s}</option>)}</select>
+        </div>
+        {filteredLibrary.slice(0, libraryLimit).map((q) => <div className="listItem" key={q.id}>
+          <div style={{ flex: 1 }}><div className="small muted">{q.subject} · {q.topic} {records[q.id]?.lastCorrect === false && " · Previously missed"}</div><p><b>{q.question_text}</b></p></div>
+          <button className="btn alt sm" onClick={() => startSession([q.id], "tutor")}>Practice</button>
+        </div>)}
+        {!filteredLibrary.length && <p className="muted">No matching approved questions.</p>}
+        {libraryLimit < filteredLibrary.length && <button className="btn alt" onClick={() => setLibraryLimit((n) => n + 30)}>Show more</button>}
+        {limitReached && <p className="notice">Showing only the first {MAX_LOADED_QUESTIONS} approved questions. Server-side pagination will be added when the bank grows.</p>}
+      </section>
+    </>;
+  }
+  function Progress() {
+    const grouped = subjects.map((name) => {
+      const group = questions.filter((q) => q.subject === name);
+      const stats = group.map((q) => records[q.id] || {});
+      return { name, total: group.length, seen: stats.filter((r) => r.attempts > 0).length,
+        attempts: stats.reduce((n, r) => n + (r.attempts || 0), 0), right: stats.reduce((n, r) => n + (r.right || 0), 0) };
     });
-
-    const { data: { subscription } } =
-      supabase.auth.onAuthStateChange((_event, session) => {
-        if (active) setUser(session?.user ?? null);
-      });
-
-    return () => {
-      active = false;
-      subscription.unsubscribe();
-    };
-  }, []);
-
-  async function handleSubmit(event) {
-    event.preventDefault();
-    setError("");
-    setMessage("");
-    setBusy(true);
-
-    try {
-      if (mode === "signup") {
-        const { data, error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            emailRedirectTo:
-              window.location.origin + import.meta.env.BASE_URL
-          }
-        });
-
-        if (error) throw error;
-
-        if (data.session) {
-          setUser(data.session.user);
-        } else {
-          setMessage(
-            "If your registration is accepted, check your email " +
-            "for a confirmation link."
-          );
-        }
-      } else {
-        const { data, error } =
-          await supabase.auth.signInWithPassword({
-            email,
-            password
-          });
-
-        if (error) throw error;
-        setUser(data.user);
-      }
-
-      setPassword("");
-    } catch (err) {
-      setError(err.message || "Authentication failed.");
-    } finally {
-      setBusy(false);
-    }
+    return <>
+      <h1>Your learning progress</h1>
+      <div className="grid4">
+        <StatCard label="Total answers" value={attempted}/>
+        <StatCard label="Lifetime accuracy" value={`${percent(correctTotal, attempted)}%`}/>
+        <StatCard label="Unique questions practiced" value={studyCount}/>
+        <StatCard label="Due for review" value={dueCount}/>
+      </div>
+      <div className="grid2" style={{ marginTop: 16 }}>
+        <section className="panel"><h2 className="cardTitle">Subject coverage</h2>{grouped.map((g) => <div className="meterRow" key={g.name}><span>{g.name}</span><div className="progress"><span style={{ width: `${percent(g.seen,g.total)}%` }} /></div><b>{g.seen}/{g.total}</b></div>)}{!grouped.length && <p className="muted small">No questions loaded.</p>}</section>
+        <section className="panel"><h2 className="cardTitle">Accuracy by subject</h2>{grouped.map((g) => <div className="meterRow" key={g.name}><span>{g.name}</span><div className="progress"><span style={{ width: `${percent(g.right,g.attempts)}%`, background: "#299b7a" }} /></div><b>{g.attempts ? percent(g.right, g.attempts) + "%" : "—"}</b></div>)}{!grouped.length && <p className="muted small">Complete a session to see analytics.</p>}</section>
+      </div>
+      <h2 className="sectionTitle">Recent exams</h2>
+      <section className="panel" style={{ overflowX: "auto" }}>
+        {history.length ? <table className="table"><thead><tr><th>Date</th><th>Session</th><th>Score</th><th>Questions</th></tr></thead><tbody>{history.map((h) => <tr key={h.id}><td>{dateLabel(h.date)}</td><td>{h.label}</td><td><b>{percent(h.correct, h.count)}%</b></td><td>{h.count}</td></tr>)}</tbody></table> : <p className="muted">No completed exams yet.</p>}
+      </section>
+    </>;
   }
-
-  async function handleSignOut() {
-    setError("");
-    const { error } = await supabase.auth.signOut();
-    if (error) setError(error.message);
-    else setUser(null);
-  }
-
-  return (
-    <div style={{
-      minHeight: "100vh",
-      background: "#102c3b",
-      color: "white",
-      fontFamily: "Arial, sans-serif",
-      padding: "50px 20px",
-      boxSizing: "border-box"
-    }}>
-      <main style={{
-        maxWidth: "600px",
-        margin: "0 auto",
-        textAlign: "center"
-      }}>
-        <h1 style={{ fontSize: "48px", marginBottom: "10px" }}>
-          FreeMedTrain
-        </h1>
-
-        <h2 style={{
-          color: "#82d9c0",
-          fontWeight: "normal"
-        }}>
-          Medical Education, Accessible to Everyone.
-        </h2>
-
-        <p style={{ lineHeight: "1.7", color: "#d4e3e9" }}>
-          Free, open-source medical exam preparation,
-          community-generated questions, anatomy identification,
-          and AI-assisted learning.
-        </p>
-
-        <section style={{
-          background: "#193a4a",
-          border: "1px solid #365767",
-          borderRadius: "16px",
-          padding: "30px",
-          marginTop: "35px",
-          textAlign: "left"
-        }}>
-          {checking ? (
-            <p>Checking your session...</p>
-          ) : user ? (
-            <div>
-              <h2>Welcome to FreeMedTrain!</h2>
-              <p>Signed in as:</p>
-              <p style={{ color: "#82d9c0" }}>{user.email}</p>
-              
-<p>Welcome to your student dashboard.</p>
-<p>Choose a study activity to begin.</p>
-
-<button
-  type="button"
-  style={{ ...buttonStyle, marginBottom: "15px" }}
-  onClick={() => setShowPractice(!showPractice)}
->
-  {showPractice
-    ? "Hide Practice Questions"
-    : "Start Practice Questions"}
-</button>
-
-
-              <button style={buttonStyle} onClick={handleSignOut}>
-                Sign Out
-              </button>
-            </div>
-          ) : (
-            <>
-              <h2 style={{ marginTop: 0 }}>
-                {mode === "signup"
-                  ? "Create your free account"
-                  : "Student Login"}
-              </h2>
-
-              <form onSubmit={handleSubmit}>
-                <label htmlFor="email">Email address</label>
-                <input
-                  id="email"
-                  type="email"
-                  required
-                  autoComplete="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  style={inputStyle}
-                />
-
-                <div style={{ marginTop: "20px" }}>
-                  <label htmlFor="password">Password</label>
-                  <input
-                    id="password"
-                    type="password"
-                    required
-                    minLength={mode === "signup" ? 12 : undefined}
-                    autoComplete={
-                      mode === "signup"
-                        ? "new-password"
-                        : "current-password"
-                    }
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    style={inputStyle}
-                  />
-                </div>
-
-                {mode === "signup" && (
-                  <p style={{ color: "#b5cbd5", fontSize: "13px" }}>
-                    Use at least 12 characters and follow the
-                    password requirements configured in Supabase.
-                  </p>
-                )}
-
-                <div style={{ marginTop: "25px" }}>
-                  <button
-                    type="submit"
-                    disabled={busy}
-                    style={buttonStyle}
-                  >
-                    {busy
-                      ? "Processing..."
-                      : mode === "signup"
-                        ? "Create Account"
-                        : "Sign In"}
-                  </button>
-                </div>
-              </form>
-
-              <p style={{ textAlign: "center", marginTop: "25px" }}>
-                {mode === "signup"
-                  ? "Already have an account?"
-                  : "Don't have an account?"}
-              </p>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setMode(mode === "signup" ? "signin" : "signup");
-                  setError("");
-                  setMessage("");
-                  setPassword("");
-                }}
-                style={{
-                  background: "none",
-                  border: "none",
-                  color: "#82d9c0",
-                  cursor: "pointer",
-                  display: "block",
-                  margin: "0 auto",
-                  fontSize: "16px"
-                }}
-              >
-                {mode === "signup"
-                  ? "Sign In"
-                  : "Create a Free Account"}
-              </button>
-            </>
-          )}
-
-          {error && (
-            <p role="alert" style={{ color: "#ffb4a9" }}>
-              {error}
-            </p>
-          )}
-
-          {message && (
-            <p role="status" style={{ color: "#82d9c0" }}>
-              {message}
-            </p>
-          )}
+  function Backup() {
+    return <>
+      <h1>Settings and backup</h1>
+      <div className="grid">
+        <section className="panel stack">
+          <h2 className="cardTitle">Display name</h2>
+          <p className="cardText">This name appears on your dashboard and is saved only in this browser.</p>
+          <label className="field">Name
+            <input maxLength={60} value={store.displayName} placeholder={user?.email?.split("@")[0] || "Student"} onChange={(e) => setStore((prev) => ({ ...prev, displayName: e.target.value }))} />
+          </label>
         </section>
+        <section className="panel stack">
+          <h2 className="cardTitle">Export progress</h2>
+          <p className="cardText">Download scores, history, personal notes, flags, and unfinished exams. No question bank data is included.</p>
+          <button className="btn" onClick={exportBackup}>Download JSON backup</button>
+        </section>
+        <section className="panel stack">
+          <h2 className="cardTitle">Import progress</h2>
+          <p className="cardText">Restore a previous FreeMedTrain progress backup on this device.</p>
+          <input type="file" accept=".json,application/json" onChange={importBackup} />
+          {importMessage && <div className="notice">{importMessage}</div>}
+        </section>
+      </div>
+      <section className="panel" style={{ marginTop: 14 }}>
+        <h2 className="cardTitle">Data controls</h2>
+        <div className="row">
+          <button className="btn alt" onClick={() => setRefreshIndex((n) => n + 1)}>Refresh Supabase question bank</button>
+          <button className="btn danger" onClick={() => {
+            if (window.confirm("Delete all FreeMedTrain progress and notes stored in this browser?")) {
+              setStore((prev) => ({ ...EMPTY_STORE, ownerId: prev.ownerId, displayName: prev.displayName }));
+              navigate("dashboard");
+            }
+          }}>Reset local study progress</button>
+        </div>
+        <p className="footNote">Your account and approved questions remain in Supabase. Progress is not synchronized between devices; export backups before switching browsers or clearing browser storage.</p>
+      </section>
+    </>;
+  }
 
-        
-{user && showPractice && <PracticeQuestion />}
-
-{!checking && !user && (
-  <p style={{ color: "#b5cbd5", marginTop: "24px" }}>
-    Sign in to access FreeMedTrain practice questions.
-  </p>
-)}
-
-
-        <p style={{
-          color: "#a3b8c4",
-          marginTop: "40px",
-          fontSize: "14px"
-        }}>
-          An independent, open-source medical education project.
-        </p>
-      </main>
-    </div>
-  );
+  return <><style>{CSS}</style><div className="shell">
+    <header className="top">
+      <div className="brand"><span className="brandIcon">✳</span>FreeMedTrain</div>
+      {user && <><nav className="nav" aria-label="Main navigation">
+        {[ ["dashboard","Dashboard"], ["practice","Practice"], ["library","Question Bank"], ["progress","Progress"], ["backup","Backup"] ].map(([key,label]) => <button key={key} className={page === key ? "active" : ""} onClick={() => navigate(key)}>{label}</button>)}
+      </nav><span className="userChip">{displayName}</span></>}
+    </header>
+    {checking ? <section className="panel">Checking your session...</section> : !user ? <>
+      <section className="panel hero"><div className="eyebrow">FREE · OPEN SOURCE · COMMUNITY POWERED</div><h1>Medical education, accessible to everyone.</h1><p>Practice approved clinical and foundational questions, revisit weak areas, and contribute to an independent learning community.</p></section>
+      <section className="panel authCard stack">
+        <h2 className="cardTitle">{authMode === "signin" ? "Sign in to FreeMedTrain" : "Create your free account"}</h2>
+        <p className="cardText">The question bank is available only to signed-in students.</p>
+        <form onSubmit={submitAuth} className="stack">
+          <label className="field">Email address<input type="email" required autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} /></label>
+          <label className="field">Password<input type="password" required minLength={authMode === "signup" ? 12 : undefined} autoComplete={authMode === "signup" ? "new-password" : "current-password"} value={password} onChange={(e) => setPassword(e.target.value)} /></label>
+          {authMode === "signup" && <p className="small muted">Use 12+ characters and the complexity rules configured in Supabase.</p>}
+          <button className="btn full" type="submit" disabled={authBusy}>{authBusy ? "Processing..." : authMode === "signin" ? "Sign in" : "Create account"}</button>
+        </form>
+        <button className="btn alt full" onClick={() => { setAuthMode(authMode === "signin" ? "signup" : "signin"); setAuthError(""); setAuthNotice(""); setPassword(""); }}>
+          {authMode === "signin" ? "Create a free account" : "Already registered? Sign in"}
+        </button>
+        {authError && <div role="alert" className="error">{authError}</div>}
+        {authNotice && <div role="status" className="success">{authNotice}</div>}
+      </section>
+    </> : !localReady ? <section className="panel">Loading your study workspace...</section> : <main className="stack">
+      <div className="spread">
+        <span className="small muted">Signed in as {user.email}</span>
+        <button className="btn alt sm" onClick={signOut}>Sign out</button>
+      </div>
+      {page === "dashboard" && Dashboard()}
+      {page === "practice" && PracticeSetup()}
+      {page === "exam" && Exam()}
+      {page === "results" && Results()}
+      {page === "library" && Library()}
+      {page === "progress" && Progress()}
+      {page === "backup" && Backup()}
+    </main>}
+    <footer className="footer">FreeMedTrain is an independent medical education project. Approved practice questions are retrieved from Supabase. Not affiliated with USMLE, NBME, or NBOME; not a substitute for clinical guidance.</footer>
+  </div></>;
 }
 
 createRoot(document.getElementById("root")).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
+  <React.StrictMode><App /></React.StrictMode>
 );
