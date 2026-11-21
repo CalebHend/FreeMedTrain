@@ -5,6 +5,8 @@ import { supabase } from "./lib/supabase";
 export default function PracticeQuestion() {
   const [questions, setQuestions] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [selectedSubject, setSelectedSubject] =
+  useState("All subjects");
   const [selected, setSelected] = useState(null);
   const [showAnswer, setShowAnswer] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -46,7 +48,20 @@ export default function PracticeQuestion() {
     return <p>No approved questions are available yet.</p>;
   }
 
-  const q = questions[currentIndex];
+  
+const subjects = [
+  ...new Set(questions.map((q) => q.subject))
+].sort();
+
+const visibleQuestions =
+  selectedSubject === "All subjects"
+    ? questions
+    : questions.filter(
+        (q) => q.subject === selectedSubject
+      );
+
+const q = visibleQuestions[currentIndex];
+
   const correct = selected === q.correct_choice_index;
 
   function nextQuestion() {
@@ -65,13 +80,50 @@ export default function PracticeQuestion() {
       textAlign: "left"
     }}>
       <h2>Practice Questions</h2>
+      
+<div style={{ marginBottom: "20px" }}>
+  <label
+    htmlFor="subject-select"
+    style={{ display: "block", marginBottom: "8px" }}
+  >
+    Choose a subject
+  </label>
+
+  <select
+    id="subject-select"
+    value={selectedSubject}
+    onChange={(e) => {
+      setSelectedSubject(e.target.value);
+      setCurrentIndex(0);
+      setSelected(null);
+      setShowAnswer(false);
+    }}
+    style={{
+      width: "100%",
+      padding: "12px",
+      background: "#102c3b",
+      color: "white",
+      border: "1px solid #6e8996",
+      borderRadius: "8px"
+    }}
+  >
+    <option value="All subjects">All subjects</option>
+
+    {subjects.map((subject) => (
+      <option key={subject} value={subject}>
+        {subject}
+      </option>
+    ))}
+  </select>
+</div>
+
 
       <p style={{ color: "#82d9c0" }}>
         {q.subject} — {q.topic}
       </p>
 
       <p style={{ color: "#b5cbd5" }}>
-        Question {currentIndex + 1} of {questions.length}
+        Question {currentIndex + 1} of {visibleQuestions.length}
       </p>
 
       <h3 style={{ lineHeight: "1.6" }}>
@@ -142,7 +194,7 @@ export default function PracticeQuestion() {
 
           <p>{q.explanation}</p>
 
-          {currentIndex < questions.length - 1 ? (
+          {currentIndex < visibleQuestions.length - 1 ? (
             <button onClick={nextQuestion}>
               Next Question
             </button>
