@@ -9,6 +9,75 @@ const PAGE_SIZE = 200;
 const MAX_LOADED_QUESTIONS = 1000; // Initial safety limit; add server-side pagination as the bank grows.
 const EMPTY_STORE = { ownerId: null, displayName: "", records: {}, history: [], session: null };
 
+// Student-generated batches are stored as compact JSON files in Supabase Storage.
+// The database stores only one lightweight metadata row per batch.
+const BATCH_BUCKET = "question-batches";
+const MAX_BATCH_QUESTIONS = 50;
+const MAX_BATCH_BYTES = 512 * 1024;
+const MAX_APPROVED_BATCHES = 30;
+const CHATGPT_BATCH_PROMPT = "You are helping me contribute original, high-quality medical education questions to FreeMedTrain, a free community study platform.\n\nSOURCE RULES\n- Use only materials I have uploaded to this ChatGPT Project and specifically authorized for this purpose. If a fact is not supported by the material, do not invent it. You may indicate a limitation rather than guessing.\n- Do not reproduce copyrighted textbook passages, commercial question-bank questions, instructor exam questions, recalled USMLE/COMLEX questions, or illustrations. Create original questions in your own wording.\n- Do not include any patient-identifying information. Never use confidential exam content.\n- Use the lecture or document names as source_reference, but do not invent page numbers, citations, or other sources.\n- Prefer clinically meaningful vignettes and explanations. Use accurate and plausible distractors. One unambiguously correct answer per question.\n- Avoid duplicates, ambiguous wording, trick questions, and unsupported clinical claims.\n\nTASK\nPrepare 25 original, single-best-answer multiple-choice questions based on the materials in this Project (or a smaller number if coverage is insufficient). Aim for 4 or 5 answer choices per question and vary the position of the correct answer. The medical material must be checked for accuracy; if you are unsure, omit that concept. Organize questions by their actual subjects and topics.\n\nOUTPUT FORMAT (STRICT)\nCreate a downloadable UTF-8 JSON file named FreeMedTrain_questions.json. Do not use Markdown code fences or add explanation outside the file. The JSON must be one object with these keys:\n\nschema_version: the number 1\ntitle: short title of the contribution, maximum 120 characters\nsource_notes: short summary of allowed source documents, maximum 500 characters\nquestions: an array of up to 50 question objects\n\nEach question object must contain exactly these keys:\nsubject: discipline such as Anatomy, Physiology, Pathology, Pharmacology\ntopic: narrow topic name\nquestion_type: \"multiple_choice\"\nquestion_text: original question stem or clinical vignette\nanswer_choices: array of 4 or 5 distinct answer strings, no A/B/C/D letters\ncorrect_choice_index: zero-based integer index of the correct answer (0 means first choice)\nexplanation: clear clinical/biological rationale and why key distractors are wrong\nsource_reference: specific uploaded lecture/file name(s) actually used\n\nUse standard JSON string syntax with double quotes. Never put the correct answer or answer index inside question_text. Every question must be independently answerable. Verify the answer index points to the intended choice. Ensure the finished JSON parses successfully. If you cannot create a downloadable file, output the raw JSON alone so I can save it with a .json extension. Do not copy any lectures into the JSON file.";
+
+function validateQuestionBatch(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) || raw.schema_version !== 1) {
+    throw new Error("Invalid FreeMedTrain JSON file: schema_version must be the number 1.");
+  }
+  const title = typeof raw.title === "string" ? raw.title.trim() : "";
+  const sourceNotes = typeof raw.source_notes === "string" ? raw.source_notes.trim() : "";
+  if (title.length < 3 || title.length > 120) throw new Error("Batch title must be 3 to 120 characters.");
+  if (sourceNotes.length > 500) throw new Error("Source notes are too long (maximum 500 characters).");
+  if (!Array.isArray(raw.questions) || raw.questions.length < 1 || raw.questions.length > MAX_BATCH_QUESTIONS) {
+    throw new Error(`Please provide 1 to ${MAX_BATCH_QUESTIONS} questions per file.`);
+  }
+  const questions = raw.questions.map((item, i) => {
+    const which = `Question ${i + 1}`;
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`${which} is not a JSON object.`);
+    }
+    function field(name, min, max) {
+      const value = typeof item[name] === "string" ? item[name].trim() : "";
+      if (value.length < min || value.length > max) {
+        throw new Error(`${which}: ${name} must be ${min}–${max} characters.`);
+      }
+      return value;
+    }
+    if (item.question_type !== "multiple_choice") {
+      throw new Error(`${which}: only multiple_choice is supported for this batch format.`);
+    }
+    const subject = field("subject", 2, 80);
+    const topic = field("topic", 2, 120);
+    const questionText = field("question_text", 20, 2000);
+    const explanation = field("explanation", 20, 3000);
+    const sourceReference = field("source_reference", 1, 350);
+    if (!Array.isArray(item.answer_choices) || item.answer_choices.length < 2 || item.answer_choices.length > 8 ||
+        item.answer_choices.some((c) => typeof c !== "string" || !c.trim() || c.length > 500)) {
+      throw new Error(`${which}: answer_choices must contain 2–8 nonempty strings.`);
+    }
+    const answerChoices = item.answer_choices.map((c) => c.trim());
+    if (new Set(answerChoices.map((c) => c.toLowerCase())).size !== answerChoices.length) {
+      throw new Error(`${which}: duplicate answer choices are not allowed.`);
+    }
+    const answer = item.correct_choice_index;
+    if (!Number.isInteger(answer) || answer < 0 || answer >= answerChoices.length) {
+      throw new Error(`${which}: correct_choice_index must be a valid zero-based answer index.`);
+    }
+    return {
+      subject, topic, question_type: "multiple_choice", question_text: questionText,
+      answer_choices: answerChoices, correct_choice_index: answer,
+      explanation, source_reference: sourceReference
+    };
+  });
+  const document = { schema_version: 1, title, source_notes: sourceNotes, questions };
+  const compactJSON = JSON.stringify(document);
+  const sizeBytes = new Blob([compactJSON], { type: "application/json" }).size;
+  if (sizeBytes > MAX_BATCH_BYTES) {
+    throw new Error("Question batch is too large; split it into smaller files (maximum 512 KB).");
+  }
+  const counts = {};
+  questions.forEach((q) => { counts[q.subject] = (counts[q.subject] || 0) + 1; });
+  return { document, compactJSON, sizeBytes, counts };
+}
+
+
 function loadLocal(userId) {
   try {
     const data = JSON.parse(localStorage.getItem(STORAGE_PREFIX + userId) || "{}");
@@ -77,6 +146,16 @@ function App() {
   const [libraryLimit, setLibraryLimit] = useState(30);
   const [clock, setClock] = useState(Date.now());
   const [importMessage, setImportMessage] = useState("");
+  const [fileBatch, setFileBatch] = useState(null);
+  const [batchRights, setBatchRights] = useState(false);
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [batchError, setBatchError] = useState("");
+  const [batchNotice, setBatchNotice] = useState("");
+  const [myBatches, setMyBatches] = useState([]);
+  const [batchListError, setBatchListError] = useState("");
+  const [batchRefresh, setBatchRefresh] = useState(0);
+  const [batchLoadWarning, setBatchLoadWarning] = useState("");
+  const [retryBatch, setRetryBatch] = useState(null);
 
   const userId = user?.id || null;
   const localReady = Boolean(userId && store.ownerId === userId);
@@ -105,6 +184,12 @@ function App() {
     setPage("dashboard");
     setSubject("All subjects");
     setLibrarySubject("All subjects");
+    setFileBatch(null);
+    setBatchRights(false);
+    setBatchError("");
+    setBatchNotice("");
+    setMyBatches([]);
+    setRetryBatch(null);
   }, [userId]);
 
   useEffect(() => {
@@ -122,7 +207,7 @@ function App() {
   }, [store, userId, localReady]);
 
   useEffect(() => {
-    if (!userId) { setQuestions([]); setLoadingBank(false); setBankError(""); return; }
+    if (!userId) { setQuestions([]); setLoadingBank(false); setBankError(""); setBatchLoadWarning(""); return; }
     let cancelled = false;
     async function fetchApprovedQuestions() {
       setLoadingBank(true);
@@ -150,7 +235,54 @@ function App() {
           if (!data || data.length < PAGE_SIZE) break;
           if (start + PAGE_SIZE >= MAX_LOADED_QUESTIONS) setLimitReached(true);
         }
-        if (!cancelled) setQuestions(collected);
+        // Also load reviewed question files. These are kept as immutable objects in
+        // the private question-batches Storage bucket, not as one database row per question.
+        let skippedBatchFiles = 0;
+        try {
+          const { data: batches, error: metaError } = await supabase
+            .from("question_batches")
+            .select("id, storage_path, submitted_at")
+            .eq("status", "approved")
+            .order("approved_at", { ascending: false })
+            .limit(MAX_APPROVED_BATCHES);
+          if (metaError) throw metaError;
+          for (let index = 0; index < (batches || []).length && collected.length < MAX_LOADED_QUESTIONS; index += 4) {
+            const group = batches.slice(index, index + 4);
+            const loaded = await Promise.all(group.map(async (batch) => {
+              try {
+                const { data: file, error: storageError } = await supabase.storage
+                  .from(BATCH_BUCKET).download(batch.storage_path);
+                if (storageError) throw storageError;
+                const parsed = JSON.parse(await file.text());
+                const valid = validateQuestionBatch(parsed);
+                return valid.document.questions.map((q, position) => ({
+                  ...q,
+                  id: `${batch.id}:${position}`,
+                  created_at: batch.submitted_at
+                }));
+              } catch (err) {
+                console.warn("FreeMedTrain: skipped invalid or unavailable approved batch", batch.id, err);
+                return null;
+              }
+            }));
+            if (cancelled) return;
+            for (const batchQuestions of loaded) {
+              if (!batchQuestions) { skippedBatchFiles += 1; continue; }
+              collected.push(...batchQuestions.slice(0, MAX_LOADED_QUESTIONS - collected.length));
+              if (collected.length >= MAX_LOADED_QUESTIONS) break;
+            }
+          }
+          if (!cancelled) setBatchLoadWarning(skippedBatchFiles
+            ? `${skippedBatchFiles} approved question file(s) could not be loaded. Please notify a moderator.`
+            : "");
+        } catch (err) {
+          if (!cancelled) setBatchLoadWarning("Batch question library is not configured or could not be reached. Existing questions remain available.");
+          console.warn("FreeMedTrain: batch library unavailable", err);
+        }
+        if (!cancelled) {
+          setLimitReached(collected.length >= MAX_LOADED_QUESTIONS);
+          setQuestions(collected);
+        }
       } catch (error) {
         if (!cancelled) { setBankError(error.message || "Could not load questions."); setQuestions([]); }
       } finally {
@@ -160,6 +292,25 @@ function App() {
     fetchApprovedQuestions();
     return () => { cancelled = true; };
   }, [userId, refreshIndex]);
+
+  useEffect(() => {
+    if (page !== "contribute" || !userId) return;
+    let active = true;
+    async function loadMyBatches() {
+      setBatchListError("");
+      const { data, error } = await supabase
+        .from("question_batches")
+        .select("id, title, question_count, status, submitted_at, storage_path")
+        .eq("submitted_by", userId)
+        .order("submitted_at", { ascending: false })
+        .limit(20);
+      if (!active) return;
+      if (error) setBatchListError(error.message);
+      else setMyBatches(data || []);
+    }
+    loadMyBatches();
+    return () => { active = false; };
+  }, [userId, page, batchRefresh]);
 
   useEffect(() => {
     if (page !== "exam" || session?.mode !== "timed") return;
@@ -210,6 +361,70 @@ function App() {
     else { setUser(null); setPage("dashboard"); }
   }
   function navigate(next) { setPage(next); setLibraryLimit(30); setImportMessage(""); }
+
+  async function selectQuestionFile(event) {
+    const file = event.target.files?.[0];
+    setBatchError(""); setBatchNotice(""); setBatchRights(false); setRetryBatch(null); setFileBatch(null);
+    if (!file) return;
+    if (file.size > MAX_BATCH_BYTES) {
+      setBatchError("File is too large; FreeMedTrain accepts a maximum of 512 KB per JSON file.");
+      return;
+    }
+    try {
+      const parsed = JSON.parse(await file.text());
+      setFileBatch(validateQuestionBatch(parsed));
+    } catch (error) {
+      setBatchError(error.message || "Could not read your JSON file.");
+    }
+  }
+
+  async function submitQuestionBatch() {
+    if (!user || !fileBatch || !batchRights || batchBusy) return;
+    setBatchBusy(true);
+    setBatchError("");
+    setBatchNotice("");
+    try {
+      const id = retryBatch?.id || crypto.randomUUID();
+      const storagePath = retryBatch?.storagePath || `${user.id}/${id}.json`;
+      if (!retryBatch) {
+        // Metadata is created first. Storage upload requires matching pending metadata;
+        // this prevents users from filling the bucket with arbitrary files.
+        const { error: metadataError } = await supabase.from("question_batches").insert({
+          id, submitted_by: user.id, storage_path: storagePath,
+          title: fileBatch.document.title,
+          source_notes: fileBatch.document.source_notes,
+          question_count: fileBatch.document.questions.length,
+          rights_confirmed: true
+        });
+        if (metadataError) throw metadataError;
+        setRetryBatch({ id, storagePath });
+      }
+      const data = new Blob([fileBatch.compactJSON], { type: "application/json" });
+      const { error: storageError } = await supabase.storage.from(BATCH_BUCKET)
+        .upload(storagePath, data, { contentType: "application/json", upsert: false });
+      if (storageError) throw new Error(`File upload failed: ${storageError.message}. Click Retry upload to try again.`);
+      setBatchNotice(`Submitted ${fileBatch.document.questions.length} questions for moderator review (batch ${id}).`);
+      setFileBatch(null);
+      setBatchRights(false);
+      setRetryBatch(null);
+      setBatchRefresh((n) => n + 1);
+    } catch (error) {
+      setBatchError(error.message || "Upload failed.");
+    } finally {
+      setBatchBusy(false);
+    }
+  }
+
+  async function copyPrompt() {
+    try {
+      await navigator.clipboard.writeText(CHATGPT_BATCH_PROMPT);
+      setBatchNotice("Prompt copied! Paste it into your ChatGPT Project conversation.");
+      setBatchError("");
+    } catch {
+      setBatchError("Your browser blocked copying. Download the prompt from FreeMedTrain instructions or select the text manually.");
+    }
+  }
+
   function editRecord(id, changes) {
     setStore((prev) => ({ ...prev, records: {
       ...prev.records, [id]: { ...(prev.records[id] || {}), ...changes }
@@ -310,6 +525,7 @@ function App() {
         <div className="row" style={{ marginTop: 22 }}>
           <button className="btn" onClick={() => navigate("practice")}>Create a practice exam</button>
           <button className="btn alt" onClick={() => navigate("library")}>Explore question bank</button>
+          <button className="btn alt" onClick={() => navigate("contribute")}>Contribute a question file</button>
         </div>
       </section>
       <h2 className="sectionTitle">Your study snapshot</h2>
@@ -324,6 +540,7 @@ function App() {
         <button className="btn sm" onClick={() => navigate("exam")}>Resume session</button>
       </div>}
       {bankError && <div className="error" style={{ marginTop: 16 }}>{bankError}</div>}
+      {batchLoadWarning && <div className="notice" style={{ marginTop: 16 }}>{batchLoadWarning}</div>}
       {loadingBank && <p className="muted small">Loading approved questions from Supabase...</p>}
       <h2 className="sectionTitle">Study by subject</h2>
       <div className="grid">
@@ -337,7 +554,7 @@ function App() {
         )) : <div className="panel"><p className="muted">No approved multiple-choice questions are available yet.</p></div>}
       </div>
       <div className="notice" style={{ marginTop: 18 }}>
-        Questions are retrieved from Supabase. Scores, flags, notes, and study history are stored in this browser—not in your Supabase database.
+        Approved questions come from the Supabase database and reviewed batch files. Scores, flags, notes, and study history are stored only in this browser.
       </div>
     </>;
   }
@@ -476,7 +693,7 @@ function App() {
   }
   function Library() {
     return <>
-      <div className="spread"><div><h1>Question bank</h1><p className="muted">Browse approved questions retrieved directly from Supabase.</p></div><span className="chip">{filteredLibrary.length} matches</span></div>
+      <div className="spread"><div><h1>Question bank</h1><p className="muted">Browse approved database questions and moderator-approved JSON batches loaded from Supabase.</p></div><span className="chip">{filteredLibrary.length} matches</span></div>
       <section className="panel stack">
         <div className="grid2">
           <input className="search" aria-label="Search questions" placeholder="Search questions, topics, or subjects" value={librarySearch} onChange={(e) => { setLibrarySearch(e.target.value); setLibraryLimit(30); }} />
@@ -492,6 +709,75 @@ function App() {
       </section>
     </>;
   }
+
+  function Contribute() {
+    return <>
+      <div className="spread">
+        <div><h1>Contribute a question file</h1>
+          <p className="muted">Make questions in your own ChatGPT Project, then upload one small JSON file for review.</p>
+        </div>
+        <span className="chip green">No FreeMedTrain AI charges</span>
+      </div>
+      <div className="grid" style={{ marginTop: 10 }}>
+        <section className="panel stack">
+          <span className="chip">1. Prepare</span>
+          <h2 className="cardTitle">Your ChatGPT Project</h2>
+          <p className="cardText">Add only course materials you may use. Never upload exam recalls, confidential questions, patient information, or unauthorized textbooks.</p>
+        </section>
+        <section className="panel stack">
+          <span className="chip">2. Generate</span>
+          <h2 className="cardTitle">Copy the prompt</h2>
+          <p className="cardText">Paste our standard prompt into your Project and ask ChatGPT to produce a downloadable JSON question file.</p>
+          <button className="btn alt" onClick={copyPrompt}>Copy ChatGPT question prompt</button>
+        </section>
+        <section className="panel stack">
+          <span className="chip">3. Submit</span>
+          <h2 className="cardTitle">Upload the JSON</h2>
+          <p className="cardText">We save a single small file and a lightweight database record. A moderator reviews the full batch before anyone can practice it.</p>
+        </section>
+      </div>
+      <section className="panel stack" style={{ marginTop: 16 }}>
+        <div className="spread">
+          <h2 className="cardTitle">Submit your question batch</h2>
+          <span className="chip grey">JSON · Max 50 questions · 512 KB</span>
+        </div>
+        <label className="field">Choose your FreeMedTrain_questions.json file
+          <input type="file" accept=".json,application/json" onChange={selectQuestionFile} disabled={batchBusy}/>
+        </label>
+        {fileBatch && <div className="notice">
+          <b>{fileBatch.document.title}</b> · {fileBatch.document.questions.length} questions · {Math.round(fileBatch.sizeBytes / 1024)} KB
+          <div className="tagRow" style={{ marginTop: 9 }}>
+            {Object.entries(fileBatch.counts).map(([name, count]) => <span className="chip" key={name}>{name}: {count}</span>)}
+          </div>
+          <p style={{ marginBottom: 0 }} className="small">Review the questions in ChatGPT before uploading. A successful format check does not verify medical accuracy.</p>
+        </div>}
+        <label className="row" style={{ fontSize: 13 }}>
+          <input type="checkbox" checked={batchRights} disabled={!fileBatch || batchBusy} onChange={(e) => setBatchRights(e.target.checked)}/>
+          <span>I have permission to contribute this original content, and it includes no confidential exam items or identifiable patient data.</span>
+        </label>
+        <div className="row">
+          <button className="btn" disabled={!fileBatch || !batchRights || batchBusy} onClick={submitQuestionBatch}>
+            {batchBusy ? "Uploading…" : retryBatch ? "Retry upload" : "Submit entire batch for review"}
+          </button>
+          <span className="muted small">Nothing becomes publicly available until a moderator approves it.</span>
+        </div>
+        {batchError && <div className="error" role="alert">{batchError}</div>}
+        {batchNotice && <div className="success" role="status">{batchNotice}</div>}
+      </section>
+      <section className="panel stack" style={{ marginTop: 16 }}>
+        <div className="spread"><h2 className="cardTitle">My submitted batches</h2>
+          <button className="btn alt sm" onClick={() => setBatchRefresh((n) => n + 1)}>Refresh status</button>
+        </div>
+        {batchListError && <div className="error">{batchListError}. The administrator may need to run the batch setup SQL first.</div>}
+        {myBatches.map((batch) => <div className="listItem" key={batch.id}>
+          <div><b>{batch.title}</b><div className="small muted">{batch.question_count} questions · {dateLabel(batch.submitted_at)} · {batch.id}</div></div>
+          <span className={`chip ${batch.status === "approved" ? "green" : batch.status === "rejected" ? "grey" : ""}`}>{batch.status}</span>
+        </div>)}
+        {!myBatches.length && !batchListError && <p className="muted small">No submitted batches yet.</p>}
+      </section>
+    </>;
+  }
+
   function Progress() {
     const grouped = subjects.map((name) => {
       const group = questions.filter((q) => q.subject === name);
@@ -560,7 +846,7 @@ function App() {
     <header className="top">
       <div className="brand"><span className="brandIcon">✳</span>FreeMedTrain</div>
       {user && <><nav className="nav" aria-label="Main navigation">
-        {[ ["dashboard","Dashboard"], ["practice","Practice"], ["library","Question Bank"], ["progress","Progress"], ["backup","Backup"] ].map(([key,label]) => <button key={key} className={page === key ? "active" : ""} onClick={() => navigate(key)}>{label}</button>)}
+        {[ ["dashboard","Dashboard"], ["practice","Practice"], ["library","Question Bank"], ["contribute","Contribute"], ["progress","Progress"], ["backup","Backup"] ].map(([key,label]) => <button key={key} className={page === key ? "active" : ""} onClick={() => navigate(key)}>{label}</button>)}
       </nav><span className="userChip">{displayName}</span></>}
     </header>
     {checking ? <section className="panel">Checking your session...</section> : !user ? <>
@@ -590,10 +876,11 @@ function App() {
       {page === "exam" && Exam()}
       {page === "results" && Results()}
       {page === "library" && Library()}
+      {page === "contribute" && Contribute()}
       {page === "progress" && Progress()}
       {page === "backup" && Backup()}
     </main>}
-    <footer className="footer">FreeMedTrain is an independent medical education project. Approved practice questions are retrieved from Supabase. Not affiliated with USMLE, NBME, or NBOME; not a substitute for clinical guidance.</footer>
+    <footer className="footer">FreeMedTrain is an independent medical education project. Approved practice questions are retrieved from Supabase database and Storage. Not affiliated with USMLE, NBME, or NBOME; not a substitute for clinical guidance.</footer>
   </div></>;
 }
 
