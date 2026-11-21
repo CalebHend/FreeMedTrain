@@ -2,6 +2,7 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { supabase } from "./lib/supabase";
+import PracticeQuestion from "./PracticeQuestion";
 
 const inputStyle = {
   width: "100%",
@@ -271,6 +272,8 @@ function App() {
             </p>
           )}
         </section>
+
+        <PracticeQuestion />
 
         <p style={{
           color: "#a3b8c4",
