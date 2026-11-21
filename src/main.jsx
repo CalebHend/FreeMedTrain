@@ -1,122 +1,96 @@
-        <div className="grid2">
-          <input className="search" aria-label="Search questions" placeholder="Search questions, topics, or subjects" value={librarySearch} onChange={(e) => { setLibrarySearch(e.target.value); setLibraryLimit(30); }} />
-          <select className="search" aria-label="Subject" value={librarySubject} onChange={(e) => { setLibrarySubject(e.target.value); setLibraryLimit(30); }}><option>All subjects</option>{subjects.map((s) => <option key={s}>{s}</option>)}</select>
-        </div>
-        {filteredLibrary.slice(0, libraryLimit).map((q) => <div className="listItem" key={q.id}>
-          <div style={{ flex: 1 }}><div className="small muted">{q.subject} · {q.topic} {records[q.id]?.lastCorrect === false && " · Previously missed"}</div><p><b>{q.question_text}</b></p></div>
-          <button className="btn alt sm" onClick={() => startSession([q.id], "tutor")}>Practice</button>
-        </div>)}
-        {!filteredLibrary.length && <p className="muted">No matching approved questions.</p>}
-        {libraryLimit < filteredLibrary.length && <button className="btn alt" onClick={() => setLibraryLimit((n) => n + 30)}>Show more</button>}
-        {limitReached && <p className="notice">Showing only the first {MAX_LOADED_QUESTIONS} approved questions. Server-side pagination will be added when the bank grows.</p>}
-      </section>
-    </>;
-  }
-  function Progress() {
-    const grouped = subjects.map((name) => {
-      const group = questions.filter((q) => q.subject === name);
-      const stats = group.map((q) => records[q.id] || {});
-      return { name, total: group.length, seen: stats.filter((r) => r.attempts > 0).length,
-        attempts: stats.reduce((n, r) => n + (r.attempts || 0), 0), right: stats.reduce((n, r) => n + (r.right || 0), 0) };
-    });
-    return <>
-      <h1>Your learning progress</h1>
-      <div className="grid4">
-        <StatCard label="Total answers" value={attempted}/>
-        <StatCard label="Lifetime accuracy" value={`${percent(correctTotal, attempted)}%`}/>
-        <StatCard label="Unique questions practiced" value={studyCount}/>
-        <StatCard label="Due for review" value={dueCount}/>
-      </div>
-      <div className="grid2" style={{ marginTop: 16 }}>
-        <section className="panel"><h2 className="cardTitle">Subject coverage</h2>{grouped.map((g) => <div className="meterRow" key={g.name}><span>{g.name}</span><div className="progress"><span style={{ width: `${percent(g.seen,g.total)}%` }} /></div><b>{g.seen}/{g.total}</b></div>)}{!grouped.length && <p className="muted small">No questions loaded.</p>}</section>
-        <section className="panel"><h2 className="cardTitle">Accuracy by subject</h2>{grouped.map((g) => <div className="meterRow" key={g.name}><span>{g.name}</span><div className="progress"><span style={{ width: `${percent(g.right,g.attempts)}%`, background: "#299b7a" }} /></div><b>{g.attempts ? percent(g.right, g.attempts) + "%" : "—"}</b></div>)}{!grouped.length && <p className="muted small">Complete a session to see analytics.</p>}</section>
-      </div>
-      <h2 className="sectionTitle">Recent exams</h2>
-      <section className="panel" style={{ overflowX: "auto" }}>
-        {history.length ? <table className="table"><thead><tr><th>Date</th><th>Session</th><th>Score</th><th>Questions</th></tr></thead><tbody>{history.map((h) => <tr key={h.id}><td>{dateLabel(h.date)}</td><td>{h.label}</td><td><b>{percent(h.correct, h.count)}%</b></td><td>{h.count}</td></tr>)}</tbody></table> : <p className="muted">No completed exams yet.</p>}
-      </section>
-    </>;
-  }
-  function Backup() {
-    return <>
-      <h1>Settings and backup</h1>
-      <div className="grid">
-        <section className="panel stack">
-          <h2 className="cardTitle">Display name</h2>
-          <p className="cardText">This name appears on your dashboard and is saved only in this browser.</p>
-          <label className="field">Name
-            <input maxLength={60} value={store.displayName} placeholder={user?.email?.split("@")[0] || "Student"} onChange={(e) => setStore((prev) => ({ ...prev, displayName: e.target.value }))} />
-          </label>
-        </section>
-        <section className="panel stack">
-          <h2 className="cardTitle">Export progress</h2>
-          <p className="cardText">Download scores, history, personal notes, flags, and unfinished exams. No question bank data is included.</p>
-          <button className="btn" onClick={exportBackup}>Download JSON backup</button>
-        </section>
-        <section className="panel stack">
-          <h2 className="cardTitle">Import progress</h2>
-          <p className="cardText">Restore a previous FreeMedTrain progress backup on this device.</p>
-          <input type="file" accept=".json,application/json" onChange={importBackup} />
-          {importMessage && <div className="notice">{importMessage}</div>}
-        </section>
-      </div>
-      <section className="panel" style={{ marginTop: 14 }}>
-        <h2 className="cardTitle">Data controls</h2>
-        <div className="row">
-          <button className="btn alt" onClick={() => setRefreshIndex((n) => n + 1)}>Refresh Supabase question bank</button>
-          <button className="btn danger" onClick={() => {
-            if (window.confirm("Delete all FreeMedTrain progress and notes stored in this browser?")) {
-              setStore((prev) => ({ ...EMPTY_STORE, ownerId: prev.ownerId, displayName: prev.displayName }));
-              navigate("dashboard");
-            }
-          }}>Reset local study progress</button>
-        </div>
-        <p className="footNote">Your account and approved questions remain in Supabase. Progress is not synchronized between devices; export backups before switching browsers or clearing browser storage.</p>
-      </section>
-    </>;
-  }
+import React, { useEffect, useMemo, useState } from "react";
+import { createRoot } from "react-dom/client";
+import { supabase } from "./lib/supabase";
 
-  return <><style>{CSS}</style><div className="shell">
-    <header className="top">
-      <div className="brand"><span className="brandIcon">✳</span>FreeMedTrain</div>
-      {user && <><nav className="nav" aria-label="Main navigation">
-        {[ ["dashboard","Dashboard"], ["practice","Practice"], ["library","Question Bank"], ["progress","Progress"], ["backup","Backup"] ].map(([key,label]) => <button key={key} className={page === key ? "active" : ""} onClick={() => navigate(key)}>{label}</button>)}
-      </nav><span className="userChip">{displayName}</span></>}
-    </header>
-    {checking ? <section className="panel">Checking your session...</section> : !user ? <>
-      <section className="panel hero"><div className="eyebrow">FREE · OPEN SOURCE · COMMUNITY POWERED</div><h1>Medical education, accessible to everyone.</h1><p>Practice approved clinical and foundational questions, revisit weak areas, and contribute to an independent learning community.</p></section>
-      <section className="panel authCard stack">
-        <h2 className="cardTitle">{authMode === "signin" ? "Sign in to FreeMedTrain" : "Create your free account"}</h2>
-        <p className="cardText">The question bank is available only to signed-in students.</p>
-        <form onSubmit={submitAuth} className="stack">
-          <label className="field">Email address<input type="email" required autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} /></label>
-          <label className="field">Password<input type="password" required minLength={authMode === "signup" ? 12 : undefined} autoComplete={authMode === "signup" ? "new-password" : "current-password"} value={password} onChange={(e) => setPassword(e.target.value)} /></label>
-          {authMode === "signup" && <p className="small muted">Use 12+ characters and the complexity rules configured in Supabase.</p>}
-          <button className="btn full" type="submit" disabled={authBusy}>{authBusy ? "Processing..." : authMode === "signin" ? "Sign in" : "Create account"}</button>
-        </form>
-        <button className="btn alt full" onClick={() => { setAuthMode(authMode === "signin" ? "signup" : "signin"); setAuthError(""); setAuthNotice(""); setPassword(""); }}>
-          {authMode === "signin" ? "Create a free account" : "Already registered? Sign in"}
-        </button>
-        {authError && <div role="alert" className="error">{authError}</div>}
-        {authNotice && <div role="status" className="success">{authNotice}</div>}
-      </section>
-    </> : !localReady ? <section className="panel">Loading your study workspace...</section> : <main className="stack">
-      <div className="spread">
-        <span className="small muted">Signed in as {user.email}</span>
-        <button className="btn alt sm" onClick={signOut}>Sign out</button>
-      </div>
-      {page === "dashboard" && Dashboard()}
-      {page === "practice" && PracticeSetup()}
-      {page === "exam" && Exam()}
-      {page === "results" && Results()}
-      {page === "library" && Library()}
-      {page === "progress" && Progress()}
-      {page === "backup" && Backup()}
-    </main>}
-    <footer className="footer">FreeMedTrain is an independent medical education project. Approved practice questions are retrieved from Supabase. Not affiliated with USMLE, NBME, or NBOME; not a substitute for clinical guidance.</footer>
-  </div></>;
+// FreeMedTrain: all questions come from Supabase. No questions are embedded here.
+// Student history, notes, and preferences are stored only in this browser.
+const STORAGE_PREFIX = "freemedtrain:student:v1:";
+const PAGE_SIZE = 200;
+const MAX_LOADED_QUESTIONS = 1000; // Initial safety limit; add server-side pagination as the bank grows.
+const EMPTY_STORE = { ownerId: null, displayName: "", records: {}, history: [], session: null };
+
+function loadLocal(userId) {
+  try {
+    const data = JSON.parse(localStorage.getItem(STORAGE_PREFIX + userId) || "{}");
+    return {
+      ownerId: userId,
+      displayName: typeof data.displayName === "string" ? data.displayName.slice(0, 60) : "",
+      records: data.records && typeof data.records === "object" && !Array.isArray(data.records) ? data.records : {},
+      history: Array.isArray(data.history) ? data.history.slice(0, 50) : [],
+      session: data.session && typeof data.session === "object" ? data.session : null
+    };
+  } catch {
+    return { ...EMPTY_STORE, ownerId: userId };
+  }
+}
+function shuffle(items) {
+  const result = [...items];
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+  return result;
+}
+function percent(a, b) { return b ? Math.round((100 * a) / b) : 0; }
+function dateLabel(time) { return new Date(time).toLocaleDateString(); }
+function downloadJSON(filename, data) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-createRoot(document.getElementById("root")).render(
-  <React.StrictMode><App /></React.StrictMode>
-);
+const CSS = `
+:root{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color:#18243a;background:#f4f6fa;font-synthesis:none}
+*{box-sizing:border-box}body{margin:0}button,input,select,textarea{font:inherit}button{cursor:pointer}button:disabled{opacity:.48;cursor:default}button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid #8faaff;outline-offset:2px}
+.shell{max-width:1200px;margin:auto;padding:20px 22px 58px}.top{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:24px}.brand{display:flex;align-items:center;gap:10px;font-weight:850;font-size:19px;letter-spacing:-.03em;color:#172b64}.brandIcon{width:42px;height:42px;border-radius:13px;background:linear-gradient(135deg,#375bc6,#8c6ed0);display:grid;place-items:center;font-size:24px;color:white}.nav{display:flex;gap:5px;flex-wrap:wrap}.nav button{background:transparent;border:0;border-radius:10px;padding:10px 12px;font-size:13px;color:#5a6982;font-weight:700}.nav button.active,.nav button:hover{background:#e4eafb;color:#2548a5}.userChip{background:#e9edff;color:#28459b;border-radius:40px;padding:8px 12px;font-size:12px;font-weight:750;max-width:210px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.panel{background:#fff;border:1px solid #dfe6ef;box-shadow:0 8px 32px rgba(29,47,86,.055);border-radius:17px;padding:22px}.hero{background:linear-gradient(115deg,#172b64,#365ac7 70%,#6279d0);color:#fff;border:0;padding:30px 33px}.hero h1{font-size:clamp(28px,4vw,39px);letter-spacing:-.035em;line-height:1.12;margin:0 0 12px}.hero p{max-width:720px;color:#e0e7ff;margin:0;font-size:14px}.eyebrow{text-transform:uppercase;font-weight:850;letter-spacing:.12em;font-size:11px;color:#6c82b5;margin-bottom:10px}.hero .eyebrow{color:#d7e3ff}.sectionTitle{font-size:20px;margin:28px 0 14px;letter-spacing:-.02em}.muted{color:#67748a}.small{font-size:12px}.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:13px}.grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:13px}.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}.stack{display:grid;gap:12px}.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.spread{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}.btn{background:#335ccf;color:white;border:0;border-radius:10px;padding:11px 15px;font-weight:750;font-size:13px}.btn:hover:not(:disabled){background:#2647a6}.btn.alt{background:#eff2ff;color:#294ba7}.btn.alt:hover{background:#e2e8ff}.btn.danger{background:#fff0f0;color:#b53c48}.btn.sm{padding:7px 10px;font-size:12px}.btn.full{width:100%}.chip{display:inline-block;border-radius:7px;padding:4px 9px;background:#eef2ff;color:#28469b;font-size:11px;font-weight:800}.chip.green{background:#ddf4ea;color:#126044}.chip.grey{background:#edf0f5;color:#53647a}.stat{padding:17px}.stat .num{font-size:28px;font-weight:850;letter-spacing:-.04em}.stat .label{font-size:12px;color:#67748a}.cardTitle{font-size:18px;margin:0 0 7px}.cardText{color:#67748a;font-size:13px;margin:0;line-height:1.55}.field{display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:750;color:#445372}.field input,.field select,.field textarea,.search{padding:11px 12px;color:#18243a;background:#fff;border:1px solid #cdd7e7;border-radius:9px;min-width:0;width:100%;font-size:14px}.field textarea{min-height:85px;resize:vertical}.notice{background:#f1f5ff;border-left:4px solid #5978d6;padding:12px 14px;border-radius:7px;font-size:13px;color:#344b82}.error{background:#fff0f0;border-left:4px solid #bf5d64;padding:12px 14px;border-radius:7px;font-size:13px;color:#8c2b38}.success{background:#e7f7ee;border-left:4px solid #329470;padding:12px 14px;border-radius:7px;font-size:13px;color:#126044}.footer{font-size:12px;color:#78869b;padding-top:30px}.progress{background:#e8edf5;height:9px;border-radius:40px;overflow:hidden}.progress span{display:block;background:#4268d0;height:100%;border-radius:40px}.examLayout{display:grid;grid-template-columns:minmax(0,1fr) 260px;align-items:start;gap:15px}.questionText{font-size:18px;font-weight:650;line-height:1.6;margin:16px 0 22px}.choices{display:grid;gap:9px}.choice{display:flex;gap:10px;align-items:flex-start;width:100%;background:#fff;border:1px solid #dce2ed;border-radius:11px;padding:13px;text-align:left;color:#1c2a40}.choice:hover:not(:disabled){border-color:#7594d9;background:#f8faff}.choice.selected{border:2px solid #4266d1;padding:12px;background:#f0f4ff}.choice.correct{background:#e6f7ee;border-color:#389d77}.choice.wrong{background:#fff0f0;border-color:#c36a74}.letter{background:#edf1f8;min-width:27px;height:27px;border-radius:7px;display:grid;place-items:center;font-size:12px;font-weight:900}.crossed{text-decoration:line-through;opacity:.48}.xbtn{margin-left:auto;border:1px solid #d9dfeb;background:#fff;border-radius:7px;color:#6e7d92;font-size:11px;padding:4px 7px}.questionNav{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px}.questionNav button{background:#fff;border:1px solid #dfe6ef;border-radius:7px;padding:8px 0;font-size:12px;font-weight:750}.questionNav button.active{background:#335ccf;color:#fff}.questionNav button.answered:not(.active){background:#e5f6ec;border-color:#a2d8b8}.questionNav button.flagged{box-shadow:inset 0 0 0 2px #d6ac44}.table{width:100%;border-collapse:collapse;font-size:13px}.table th,.table td{text-align:left;padding:10px;border-bottom:1px solid #e7ecf3}.table th{font-size:11px;color:#718097;text-transform:uppercase}.listItem{display:flex;justify-content:space-between;gap:15px;align-items:flex-start;padding:14px 0;border-bottom:1px solid #e7ecf3}.listItem:last-child{border:0}.listItem p{margin:5px 0;font-size:13px}.tagRow{display:flex;flex-wrap:wrap;gap:6px}.bigScore{font-size:62px;color:#2d9376;font-weight:900;letter-spacing:-.06em;line-height:1.15}.meterRow{display:grid;grid-template-columns:125px 1fr 55px;gap:12px;align-items:center;font-size:12px;margin:12px 0}.authCard{max-width:500px;margin:20px auto}.navBar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}.footNote{padding:9px 0;font-size:12px;color:#67748a}.divider{border:0;border-top:1px solid #e6eaf1;margin:18px 0}
+@media(max-width:930px){.grid4{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:repeat(2,1fr)}.examLayout{grid-template-columns:1fr}}
+@media(max-width:630px){.shell{padding:14px 12px 40px}.top{align-items:flex-start}.brand{font-size:17px}.nav{width:100%}.nav button{padding:8px}.hero{padding:23px}.panel{padding:17px}.grid,.grid2{grid-template-columns:1fr}.grid4{grid-template-columns:repeat(2,minmax(0,1fr))}.questionText{font-size:16px}.questionNav{grid-template-columns:repeat(8,minmax(0,1fr))}.meterRow{grid-template-columns:90px 1fr 42px}.bigScore{font-size:50px}}
+`;
+
+function App() {
+  const [user, setUser] = useState(null);
+  const [checking, setChecking] = useState(true);
+  const [authMode, setAuthMode] = useState("signin");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState("");
+  const [authNotice, setAuthNotice] = useState("");
+  const [store, setStore] = useState(EMPTY_STORE);
+  const [questions, setQuestions] = useState([]);
+  const [loadingBank, setLoadingBank] = useState(false);
+  const [bankError, setBankError] = useState("");
+  const [limitReached, setLimitReached] = useState(false);
+  const [refreshIndex, setRefreshIndex] = useState(0);
+  const [page, setPage] = useState("dashboard");
+  const [subject, setSubject] = useState("All subjects");
+  const [questionCount, setQuestionCount] = useState("10");
+  const [examMode, setExamMode] = useState("tutor");
+  const [librarySearch, setLibrarySearch] = useState("");
+  const [librarySubject, setLibrarySubject] = useState("All subjects");
+  const [libraryLimit, setLibraryLimit] = useState(30);
+  const [clock, setClock] = useState(Date.now());
+  const [importMessage, setImportMessage] = useState("");
+
+  const userId = user?.id || null;
+  const localReady = Boolean(userId && store.ownerId === userId);
+  const session = localReady ? store.session : null;
+  const records = localReady ? store.records : {};
+  const history = localReady ? store.history : [];
+
+  useEffect(() => {
+    let active = true;
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (!active) return;
+      if (error) setAuthError(error.message);
+      setUser(data.session?.user || null);
+      setChecking(false);
+    }).catch((error) => {
+      if (active) { setAuthError(error.message); setChecking(false); }
+    });
